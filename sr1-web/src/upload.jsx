@@ -41,6 +41,7 @@ const Upload = () => {
   const [processingStatus, setProcessingStatus] = useState('');
   const [isPlaying, setIsPlaying] = useState(false);
   const [censoredSegments, setCensoredSegments] = useState([]);
+  const [audioDuration, setAudioDuration] = useState(0);
 
   const handleFileChange = (event) => {
     const selectedFile = event.target.files[0];
@@ -94,6 +95,12 @@ const Upload = () => {
       const downloadUrl = `http://localhost:8080${response.data.censoredUrl}`;
       setCensoredUrl(downloadUrl);
       setCensoredSegments(response.data.censoredSegments || []);
+      
+      // Get audio duration immediately
+      const audio = new Audio(downloadUrl);
+      audio.addEventListener('loadedmetadata', () => {
+        setAudioDuration(audio.duration);
+      });
     } catch (err) {
       setError('Error processing file: ' + (err.response?.data?.message || err.message));
       setProcessingStatus('');
@@ -162,6 +169,7 @@ const Upload = () => {
             className="audio-player"
             onPlay={() => setIsPlaying(true)}
             onPause={() => setIsPlaying(false)}
+            onLoadedMetadata={(e) => setAudioDuration(e.target.duration)}
           >
             <source src={censoredUrl} type={file?.type || 'audio/mpeg'} />
             Your browser does not support the audio element.
@@ -172,7 +180,7 @@ const Upload = () => {
               <h3>Censored Segments</h3>
               <Timeline 
                 segments={censoredSegments} 
-                duration={document.querySelector('audio')?.duration || 0} 
+                duration={audioDuration} 
               />
               <div className="censored-list">
                 {censoredSegments.map(([start, end, prob, word], index) => (
