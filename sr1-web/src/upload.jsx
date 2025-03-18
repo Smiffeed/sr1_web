@@ -144,18 +144,26 @@ const Upload = () => {
         </button>
       </div>
 
-      {(isUploading || processingStatus) && (
+      {(isUploading || (processingStatus && !processingStatus.includes('complete'))) && (
         <div className="status-container">
-          {isUploading && (
-            <div className="progress-bar">
-              <div className="progress" style={{ width: `${progress}%` }}>
-                {progress}%
-              </div>
-            </div>
-          )}
-          {processingStatus && (
-            <p className="processing-status">{processingStatus}</p>
-          )}
+          <ul className="wave-menu">
+            <li></li>
+            <li></li>
+            <li></li>
+            <li></li>
+            <li></li>
+            <li></li>
+            <li></li>
+            <li></li>
+            <li></li>
+          </ul>
+          <p className="processing-status">{processingStatus}</p>
+        </div>
+      )}
+
+      {processingStatus && processingStatus.includes('complete') && (
+        <div className="status-container">
+          <p className="processing-status">{processingStatus}</p>
         </div>
       )}
 
