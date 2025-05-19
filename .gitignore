@@ -1,1 +1,4 @@
 server/models/*
+server/processed
+server/__pycache__
+env

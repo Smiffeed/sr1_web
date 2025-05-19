@@ -165,11 +165,15 @@ def censor_audio(file_path, detections):
            
         beep = AudioSegment.from_wav(beep_path)
 
+        # If no detections, return original audio
+        if not detections:
+            return file_path
+
         # Sort detections by start time
         detections = sorted(detections, key=lambda x: x[0])
         
-        # Create a new audio segment
-        censored_audio = audio[:int(detections[0][0] * 1000)] if detections else audio
+        # Create a new audio segment starting with the audio up to first detection
+        censored_audio = audio[:int(detections[0][0] * 1000)]
 
         for i, (start, end, _) in enumerate(detections):
             start_ms = int(start * 1000)
@@ -183,8 +187,13 @@ def censor_audio(file_path, detections):
             censored_audio += adjusted_beep
             
             # Add clean audio until next detection or end
-            next_start = int(detections[i+1][0] * 1000) if i < len(detections)-1 else len(audio)
-            censored_audio += audio[end_ms:next_start]
+            if i < len(detections) - 1:
+                next_start = int(detections[i+1][0] * 1000)
+            else:
+                next_start = len(audio)
+            
+            if end_ms < next_start:
+                censored_audio += audio[end_ms:next_start]
 
         censored_file_path = file_path.rsplit('.', 1)[0] + '_censored.wav'
         censored_audio.export(censored_file_path, format="wav")

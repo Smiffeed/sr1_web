@@ -120,11 +120,13 @@
   text-decoration: none;
   border-radius: 8px;
   font-weight: 500;
-  transition: background-color 0.3s ease;
+  transition: all 0.3s ease;
 }
 
 .download-button:hover {
   background-color: #535bf2;
+  color: white;
+  text-decoration: none;
 }
 
 .audio-player {

@@ -12,6 +12,8 @@ import utils
 import logging
 import torchaudio
 import librosa
+import time
+import shutil
 
 app = Flask(__name__)
 CORS(app)
@@ -32,13 +34,24 @@ tempfile.tempdir = TEMP_FOLDER
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Load the model and feature extractor
-MODEL_PATH = './models/CW_ham'
+MODEL_PATH = './models/CW_ham_mix'
 model = Wav2Vec2ForSequenceClassification.from_pretrained(MODEL_PATH)
 feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(MODEL_PATH)
 model.eval()
 
 def extract_audio(file_path):
-    if file_path.lower().endswith(('.mp4', '.avi', '.mov', '.mkv')):
+    # Convert audio files to WAV first if they're MP3 or AAC
+    if file_path.lower().endswith(('.mp3', '.aac', '.m4a')):
+        try:
+            audio = AudioSegment.from_file(file_path)
+            wav_path = os.path.splitext(file_path)[0] + '.wav'
+            audio.export(wav_path, format='wav')
+            return wav_path
+        except Exception as e:
+            logging.error(f"Error converting audio file: {str(e)}")
+            raise
+    # Handle video files
+    elif file_path.lower().endswith(('.mp4', '.avi', '.mov', '.mkv')):
         video = VideoFileClip(file_path)
         audio = video.audio
         audio_path = os.path.splitext(file_path)[0] + '.wav'
@@ -107,116 +120,127 @@ def censor_file():
         return jsonify({'error': 'No file selected'}), 400
 
     try:
-        # Save uploaded file
-        filename = secure_filename(file.filename)
-        temp_path = os.path.join(UPLOAD_FOLDER, filename)
+        # Generate unique filename using timestamp
+        timestamp = int(time.time() * 1000)
+        original_filename = secure_filename(file.filename)
+        base_filename, ext = os.path.splitext(original_filename)
+        unique_filename = f"{base_filename}_{timestamp}{ext}"
+        
+        # Save uploaded file with unique name
+        temp_path = os.path.join(UPLOAD_FOLDER, unique_filename)
         file.save(temp_path)
 
-        # Extract audio if it's a video file
-        audio_path = extract_audio(temp_path)
+        try:
+            # Extract audio if it's a video file
+            audio_path = extract_audio(temp_path)
 
-        # Process the audio
-        segments, duration = preprocess_audio(audio_path)
-        results = []
-        
-        logging.debug(f"Processing {len(segments)} segments")
-        
-        # Labels matching the fine-tuned model
-        labels = ["none", "เย็ด", "กู", "มึง", "เหี้ย", "ควย", "สวะ", "หี", "แตด"]
-        
-        for i, segment in enumerate(segments):
-            prediction, probabilities = utils.predict(model, feature_extractor, segment)
-            logging.debug(f"Segment {i}: prediction={prediction} ({labels[prediction]}), probabilities={probabilities}")
+            # Process the audio
+            segments, duration = preprocess_audio(audio_path)
+            results = []
             
-            # Check all profanity classes
-            for class_idx, prob in enumerate(probabilities):
-                if class_idx != 0 and prob > 0.4:  # Skip 'none' class and use threshold
-                    start_time = i * 0.5  # 0.5 seconds hop length
-                    end_time = min(start_time + 1, duration)
-                    detected_word = labels[class_idx]
-                    results.append((start_time, end_time, prob, detected_word))
-                    logging.debug(f"Profanity '{detected_word}' detected at segment {i}: {start_time}s to {end_time}s (prob: {prob})")
+            logging.debug(f"Processing {len(segments)} segments")
+            
+            # Labels matching the fine-tuned model
+            labels = ["none", "เย็ด", "กู", "มึง", "เหี้ย", "ควย", "สวะ", "หี", "แตด"]
+            
+            for i, segment in enumerate(segments):
+                prediction, probabilities = utils.predict(model, feature_extractor, segment)
+                logging.debug(f"Segment {i}: prediction={prediction} ({labels[prediction]}), probabilities={probabilities}")
+                
+                # Check all profanity classes
+                for class_idx, prob in enumerate(probabilities):
+                    if class_idx != 0 and prob > 0.4:  # Skip 'none' class and use threshold
+                        start_time = i * 0.5  # 0.5 seconds hop length
+                        end_time = min(start_time + 1, duration)
+                        detected_word = labels[class_idx]
+                        results.append((start_time, end_time, prob, detected_word))
+                        logging.debug(f"Profanity '{detected_word}' detected at segment {i}: {start_time}s to {end_time}s (prob: {prob})")
 
-        # Merge and censor detections
-        merged_results = utils.merge_detections(results)
-        logging.debug(f"Merged results: {merged_results}")
-        
-        if merged_results:
-            # Convert merged results to format expected by censor_audio (only need start, end, prob)
-            censor_results = [(start, end, prob) for start, end, prob, _ in merged_results]
+            # Merge and censor detections
+            merged_results = utils.merge_detections(results)
+            logging.debug(f"Merged results: {merged_results}")
             
-            # Reference your censor_audio function
-            censored_path = utils.censor_audio(audio_path, censor_results)
-            
-            # Log the path and check if the file exists
-            logging.debug(f"Censored audio path: {censored_path}")
-            if not os.path.exists(censored_path):
-                logging.error(f"Censored audio file not found: {censored_path}")
-                raise FileNotFoundError(f"Censored audio file not found: {censored_path}")
+            if merged_results:
+                # Convert merged results to format expected by censor_audio
+                censor_results = [(start, end, prob) for start, end, prob, _ in merged_results]
+                
+                # Generate unique censored filename
+                censored_path = utils.censor_audio(audio_path, censor_results)
+                
+                # Log the path and check if the file exists
+                logging.debug(f"Censored audio path: {censored_path}")
+                if not os.path.exists(censored_path):
+                    logging.error(f"Censored audio file not found: {censored_path}")
+                    raise FileNotFoundError(f"Censored audio file not found: {censored_path}")
 
-            # Move the censored file to the processed folder
-            processed_filename = f'censored_{filename}'
-            processed_path = os.path.join(PROCESSED_FOLDER, processed_filename)
-            
-            # Remove existing file if it exists
-            if os.path.exists(processed_path):
-                os.remove(processed_path)
-            
-            # If it's an audio file, move it to processed folder
-            if temp_path == audio_path:
-                os.rename(censored_path, processed_path)
-                return_path = processed_path
+                # Move the censored file to the processed folder with unique name
+                processed_filename = f'censored_{unique_filename}'
+                processed_path = os.path.join(PROCESSED_FOLDER, processed_filename)
+                
+                # Check if the original file was a video
+                is_video = temp_path.lower().endswith(('.mp4', '.avi', '.mov', '.mkv'))
+                
+                if not is_video:
+                    # For audio files, just move the censored file to processed folder
+                    shutil.move(censored_path, processed_path)
+                    return_path = processed_path
+                else:
+                    # If original was video, merge censored audio back
+                    video = VideoFileClip(temp_path)
+                    censored_audio = AudioFileClip(censored_path)
+                    final_video = video.set_audio(censored_audio)
+                    output_path = os.path.join(PROCESSED_FOLDER, processed_filename)
+                    final_video.write_videofile(output_path)
+                    video.close()
+                    censored_audio.close()
+                    return_path = output_path
+
+                # Convert numpy float32 to regular Python float for JSON serialization
+                json_merged_results = [
+                    (float(start), float(end), float(prob), word)
+                    for start, end, prob, word in merged_results
+                ]
+
+                return jsonify({
+                    'censoredUrl': f'/download/{os.path.basename(return_path)}',
+                    'censoredSegments': json_merged_results
+                })
             else:
-                # If original was video, merge censored audio back
-                video = VideoFileClip(temp_path)
-                censored_audio = AudioFileClip(censored_path)
-                final_video = video.set_audio(censored_audio)
-                output_path = os.path.join(PROCESSED_FOLDER, processed_filename)
-                final_video.write_videofile(output_path)
-                video.close()
-                censored_audio.close()
-                return_path = output_path
+                # If no profanity detected, just copy the original file
+                processed_filename = f'censored_{unique_filename}'
+                processed_path = os.path.join(PROCESSED_FOLDER, processed_filename)
+                
+                # Check if the original file was a video
+                is_video = temp_path.lower().endswith(('.mp4', '.avi', '.mov', '.mkv'))
+                
+                if not is_video:
+                    # For audio files, just copy the file
+                    shutil.copy2(audio_path, processed_path)
+                    return_path = processed_path
+                else:
+                    # For video files, handle with moviepy
+                    video = VideoFileClip(temp_path)
+                    output_path = os.path.join(PROCESSED_FOLDER, processed_filename)
+                    video.write_videofile(output_path)
+                    video.close()
+                    return_path = output_path
 
-            # Convert numpy float32 to regular Python float for JSON serialization
-            json_merged_results = [
-                (float(start), float(end), float(prob), word)
-                for start, end, prob, word in merged_results
-            ]
+                return jsonify({
+                    'censoredUrl': f'/download/{os.path.basename(return_path)}'
+                })
 
-            # Return the URL to download the censored file
-            return jsonify({
-                'censoredUrl': f'/download/{os.path.basename(return_path)}',
-                'censoredSegments': json_merged_results  # Now contains regular Python floats
-            })
-        else:
-            # If no profanity detected, just copy the original file
-            processed_filename = f'censored_{filename}'
-            processed_path = os.path.join(PROCESSED_FOLDER, processed_filename)
-            if temp_path == audio_path:
-                import shutil
-                shutil.copy2(audio_path, processed_path)
-                return_path = processed_path
-            else:
-                video = VideoFileClip(temp_path)
-                output_path = os.path.join(PROCESSED_FOLDER, processed_filename)
-                video.write_videofile(output_path)
-                video.close()
-                return_path = output_path
-
-            return jsonify({
-                'censoredUrl': f'/download/{os.path.basename(return_path)}'
-            })
+        finally:
+            # Cleanup temporary files
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            if 'audio_path' in locals() and audio_path != temp_path and os.path.exists(audio_path):
+                os.remove(audio_path)
+            if 'censored_path' in locals() and os.path.exists(censored_path):
+                os.remove(censored_path)
 
     except Exception as e:
         logging.error(f"Error in /api/censor: {e}")
         return jsonify({'error': str(e)}), 500
-
-    finally:
-        # Cleanup temporary files
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
-        if audio_path != temp_path and os.path.exists(audio_path):
-            os.remove(audio_path)
 
 @app.route('/download/<filename>')
 def download_file(filename):
